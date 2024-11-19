@@ -1,47 +1,50 @@
-document.getElementById('uploadForm').addEventListener('submit', async function (e) {
-    e.preventDefault();
+import os
+from flask import Flask, request, jsonify, send_file
+import fitz  # PyMuPDF
+from PIL import Image
+import pytesseract
+import io
 
-    const fileInput = document.getElementById('file');
-    const statusDiv = document.getElementById('status');
+app = Flask(__name__)
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-    from flask_cors import CORS
-    app = Flask(__name__)
-    CORS(app)
+def ocr_pdf(pdf_path):
+    extracted_text = ""
+    try:
+        pdf_document = fitz.open(pdf_path)
+        for page_num in range(pdf_document.page_count):
+            page = pdf_document[page_num]
+            pix = page.get_pixmap(dpi=300)
+            image = Image.open(io.BytesIO(pix.tobytes("png")))
+            text = pytesseract.image_to_string(image)
+            extracted_text += f"\n--- Page {page_num + 1} ---\n{text}"
+        pdf_document.close()
+    except Exception as e:
+        return f"Error occurred: {e}"
+    return extracted_text
 
+@app.route("/upload", methods=["POST"])
+def upload_file():
+    if "file" not in request.files:
+        return jsonify({"error": "No file part"}), 400
 
-    if (!fileInput.files.length) {
-        statusDiv.textContent = "Please select a file to upload.";
-        return;
-    }
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "No selected file"}), 400
 
-    const file = fileInput.files[0];
-    const formData = new FormData();
-    formData.append('file', file);
+    if file:
+        file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+        file.save(file_path)
 
-    statusDiv.textContent = "Uploading and processing...";
+        text = ocr_pdf(file_path)
+        output_path = os.path.join(UPLOAD_FOLDER, "output.txt")
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(text)
 
-    try {
-        const response = await fetch('https://your-app-name.onrender.com/upload', { // Replace with your Render URL
-            method: 'POST',
-            body: formData,
-        });
+        return send_file(output_path, as_attachment=True, download_name="output.txt")
 
-        if (response.ok) {
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'output.txt';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            statusDiv.textContent = "File processed. Download started.";
-        } else {
-            const errorData = await response.json();
-            statusDiv.textContent = `Error: ${errorData.error || "Unknown error"}`;
-        }
-    } catch (error) {
-        console.error(error);
-        statusDiv.textContent = "An error occurred during upload.";
-    }
-});
+    return jsonify({"error": "File upload failed"}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
